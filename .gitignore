@@ -1,0 +1,31 @@
+﻿# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Entornos y secretos
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+
+# Datos de clientes y archivos generados localmente
+data/*.csv
+data/*.tsv
+data/*.xlsx
+data/*.xls
+data/*.json
+!data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Sistema operativo e IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
