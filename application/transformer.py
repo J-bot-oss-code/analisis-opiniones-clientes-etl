@@ -1,101 +1,73 @@
 import pandas as pd
-import re
-from typing import Tuple
-from application.interfaces import ITransformer
 
-class DataTransformer(ITransformer):
-    def __init__(self, columnas_obligatorias: list, columnas_duplicados: list = None, es_opinion: bool = False, renombrar_cols: dict = None, id_fuente_default: int = None):
-        self.columnas_obligatorias = columnas_obligatorias
-        self.columnas_duplicados = columnas_duplicados if columnas_duplicados else columnas_obligatorias
-        self.es_opinion = es_opinion
-        self.renombrar_cols = renombrar_cols if renombrar_cols else {}
-        self.ids_validos = {}
-        self.id_fuente_default = id_fuente_default # Para asignar el IdFuente según el archivo
 
-        self.palabras_positivas = ['excelente', 'bueno', 'me encanta', 'genial', 'recomendado', 'rápido', 'satisfecho', 'mejor', 'superior']
-        self.palabras_negativas = ['malo', 'pésimo', 'lento', 'roto', 'no funciona', 'horrible', 'decepción', 'terrible', 'peor', 'insatisfecho']
+class DataTransformer:
+    """Valida y adapta un CSV al esquema de su tabla de destino."""
 
-    def _limpiar_texto(self, texto):
-        if not isinstance(texto, str): return texto
-        return re.sub(r'[^a-zA-Z0-9\s.,!?ñÑáéíóúÁÉÍÓÚ]', '', texto).strip()
+    def __init__(self, columnas_requeridas, clave_duplicados=None, renombrar=None,
+                 columnas_salida=None, mapas=None, valores_default=None, referencias=None):
+        self.columnas_requeridas = columnas_requeridas
+        self.clave_duplicados = clave_duplicados or columnas_requeridas
+        self.renombrar = renombrar or {}
+        self.columnas_salida = columnas_salida
+        self.mapas = mapas or {}
+        self.valores_default = valores_default or {}
+        self.referencias = referencias or {}
 
-    def _clasificar_y_puntuar(self, fila):
-        texto = str(fila.get('Comentario', '')).lower()
-        score = 0
-        for p in self.palabras_positivas:
-            if p in texto: score += 1
-        for p in self.palabras_negativas:
-            if p in texto: score -= 1
-        
-        if score > 0: return pd.Series(['Positiva', 5.0])
-        elif score < 0: return pd.Series(['Negativa', 1.0])
-        else: return pd.Series(['Neutra', 3.0])
+    def transformar(self, datos):
+        datos = datos.rename(columns=self.renombrar).copy()
+        for columna, valor in self.valores_default.items():
+            datos[columna] = valor
+        faltantes = set(self.columnas_requeridas) - set(datos.columns)
+        if faltantes:
+            raise ValueError(f"Faltan columnas obligatorias: {', '.join(sorted(faltantes))}")
 
-    def _calcular_metricas(self, df: pd.DataFrame):
-        total = len(df)
-        if total == 0: return
-        positivas = len(df[df['Clasificacion_Texto'] == 'Positiva'])
-        print(f"\n--- MÉTRICAS (Opiniones) ---")
-        print(f"Total procesados: {total} | Satisfacción: {(positivas/total)*100:.2f}%")
-        print("----------------------------\n")
+        total = len(datos)
+        datos = datos.drop_duplicates(subset=self.clave_duplicados)
 
-    def transformar(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
-        if df.empty: return df, 0
-        total_inicial = len(df)
-        
-        # 0. Renombrar columnas (Ej: Rating -> PuntajeSatisfaccion)
-        df_limpio = df.rename(columns=self.renombrar_cols)
+        for columna, valores in self.mapas.items():
+            if columna in datos.columns:
+                datos[columna] = datos[columna].map(valores)
 
-        # 1. Limpieza de duplicados y nulos 
-        df_limpio = df_limpio.drop_duplicates(subset=self.columnas_duplicados)
-        df_limpio = df_limpio.dropna(subset=self.columnas_obligatorias)
+        for columna in datos.columns:
+            if columna in {"IdCliente", "IdProducto", "IdFuente", "IdCategoria", "IdClasificacion"}:
+                valores = datos[columna].astype("string").str.extract(
+                    r"^[A-Za-z]*(\d+)$", expand=False
+                )
+                datos[columna] = pd.to_numeric(valores, errors="coerce")
 
-        # 2. LIMPIEZA DE IDS Y CAMPOS DE TEXTO
-        # Extrae solo los dígitos y los convierte en números para que SQL los acepte
-        for col in ['IdCliente', 'IdProducto', 'IdFuente']:
-            if col in df_limpio.columns:
-                df_limpio[col] = df_limpio[col].astype(str).str.replace(r'\D', '', regex=True)
-                df_limpio[col] = pd.to_numeric(df_limpio[col], errors='coerce')
+        for columna in ("IdCliente", "IdProducto", "IdFuente", "IdCategoria", "IdClasificacion"):
+            if columna in self.columnas_requeridas:
+                datos = datos.dropna(subset=[columna])
 
-        # Evita que una referencia foránea inexistente invalide todo el INSERT masivo.
-        for columna, ids_permitidos in self.ids_validos.items():
-            if columna in df_limpio.columns:
-                df_limpio = df_limpio[df_limpio[columna].isin(ids_permitidos)]
+        for columna, permitidos in self.referencias.items():
+            if columna in datos.columns:
+                datos = datos[datos[columna].isin(permitidos)]
 
-        for col in ['Nombre', 'Email']:
-            if col in df_limpio.columns:
-                df_limpio[col] = df_limpio[col].astype(str).str.strip()
-                if col == 'Email': df_limpio[col] = df_limpio[col].str.lower()
+        for columna in ("Nombre", "Email", "TipoFuente", "Comentario"):
+            if columna in datos.columns:
+                datos[columna] = datos[columna].astype("string").str.strip()
+        if "Email" in datos.columns:
+            datos["Email"] = datos["Email"].str.lower()
 
-        if self.es_opinion:
-            if 'Comentario' in df_limpio.columns:
-                df_limpio['Comentario'] = df_limpio['Comentario'].apply(self._limpiar_texto)
-                df_limpio = df_limpio[df_limpio['Comentario'] != ''] 
+        if "Fecha" in datos.columns:
+            datos["Fecha"] = pd.to_datetime(datos["Fecha"], errors="coerce").dt.date
+        if "FechaCarga" in datos.columns:
+            datos["FechaCarga"] = pd.to_datetime(datos["FechaCarga"], errors="coerce").dt.date
+        if "PuntajeSatisfaccion" in datos.columns:
+            datos["PuntajeSatisfaccion"] = pd.to_numeric(datos["PuntajeSatisfaccion"], errors="coerce")
 
-            if 'Fecha' in df_limpio.columns:
-                df_limpio['Fecha'] = pd.to_datetime(df_limpio['Fecha'], errors='coerce').dt.date
-                df_limpio = df_limpio.dropna(subset=['Fecha'])
+        campos_a_validar = [c for c in self.columnas_requeridas if c in datos.columns]
+        datos = datos.dropna(subset=campos_a_validar)
+        for columna in ("Nombre", "Email", "TipoFuente", "Comentario"):
+            if columna in self.columnas_requeridas:
+                datos = datos[datos[columna].astype("string").str.strip().ne("")]
+        if "Email" in self.columnas_requeridas:
+            datos = datos[datos["Email"].str.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", na=False)]
+        if "PuntajeSatisfaccion" in datos.columns:
+            datos = datos[datos["PuntajeSatisfaccion"].between(1, 5)]
 
-            if 'Comentario' in df_limpio.columns:
-                df_limpio[['Clasificacion_Texto', 'PuntajeSatisfaccion_Calculado']] = df_limpio.apply(self._clasificar_y_puntuar, axis=1)
-                
-                # Si el CSV no trajo puntaje (como social_comments), usamos el calculado por tu NLP
-                if 'PuntajeSatisfaccion' not in df_limpio.columns:
-                    df_limpio['PuntajeSatisfaccion'] = df_limpio['PuntajeSatisfaccion_Calculado']
-                
-                # Mapear a Llave Foránea de Clasificacion (1=Positiva, 2=Negativa, 3=Neutra)
-                mapa_clas = {'Positiva': 1, 'Negativa': 2, 'Neutra': 3}
-                df_limpio['IdClasificacion'] = df_limpio['Clasificacion_Texto'].map(mapa_clas)
-                
-                # Asignar IdFuente duro según el archivo
-                if self.id_fuente_default:
-                    df_limpio['IdFuente'] = self.id_fuente_default
+        if self.columnas_salida:
+            datos = datos[self.columnas_salida]
 
-                self._calcular_metricas(df_limpio)
-                
-                # Eliminar columnas extrañas del CSV para que el Insert de SQL no explote
-                cols_basura = ['Fuente', 'Clasificación', 'Clasificacion_Texto', 'PuntajeSatisfaccion_Calculado', 'IdComment', 'IdOpinion', 'IdReview']
-                df_limpio = df_limpio.drop(columns=[c for c in cols_basura if c in df_limpio.columns])
-
-        rechazados = total_inicial - len(df_limpio)
-        return df_limpio, rechazados
+        return datos.reset_index(drop=True), total - len(datos)

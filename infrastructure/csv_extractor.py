@@ -1,16 +1,15 @@
-import pandas as pd 
-from application.interfaces import IExtractor
+import pandas as pd
 
-class CsvExtractor(IExtractor):
-    def __init__(self, ruta_archivo: str):
+
+class CsvExtractor:
+    def __init__(self, ruta_archivo):
         self.ruta_archivo = ruta_archivo
 
-    def extraer(self) -> pd.DataFrame:
+    def extraer(self):
         try:
-            return pd.read_csv(self.ruta_archivo)
-        except Exception as e:
-            print(f"[ERROR EXTRACTOR] no se pudo leer {self.ruta_archivo}: {e}")
-            return pd.DataFrame()
-            
-
-
+            datos = pd.read_csv(self.ruta_archivo, encoding="utf-8")
+        except (OSError, UnicodeError, pd.errors.ParserError) as error:
+            raise RuntimeError(f"No se pudo leer el CSV {self.ruta_archivo}: {error}") from error
+        if datos.empty:
+            raise ValueError(f"El CSV no contiene registros: {self.ruta_archivo}")
+        return datos
