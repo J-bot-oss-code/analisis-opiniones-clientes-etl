@@ -13,3 +13,8 @@ class ETLPipeline:
         rechazados = rechazados_transformacion + rechazados_carga
 
         print(f"Procesados: {len(datos)} | Insertados: {insertados} | Rechazados: {rechazados}")
+        return {
+            "procesados": len(datos),
+            "insertados": insertados,
+            "rechazados": rechazados,
+        }
