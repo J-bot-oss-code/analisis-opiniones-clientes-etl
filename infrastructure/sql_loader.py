@@ -3,10 +3,11 @@ from datetime import date, datetime
 import pandas as pd
 from sqlalchemy import MetaData, Table, inspect, select
 
+from application.interfaces import ILoader
 from infrastructure.db_config import engine
 
 
-class SqlLoader:
+class SqlLoader(ILoader):
     def __init__(self, nombre_tabla, claves_duplicados=None):
         self.nombre_tabla = nombre_tabla
         self.claves_duplicados = claves_duplicados or []

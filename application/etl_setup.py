@@ -14,6 +14,20 @@ from infrastructure.sql_loader import SqlLoader
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 
+COLUMNA_CATEGORIA_ALTERNATIVAS = ("Categoría", "CategorÃ­a")
+CLASIFICACIONES = [
+    {"IdClasificacion": 1, "Nombre": "Positiva"},
+    {"IdClasificacion": 2, "Nombre": "Negativa"},
+    {"IdClasificacion": 3, "Nombre": "Neutra"},
+]
+RENOMBRAR_CATEGORIA = {"Categoría": "IdCategoria", "CategorÃ­a": "IdCategoria"}
+RENOMBRAR_OPINIONES = {
+    "Clasificación": "IdClasificacion",
+    "ClasificaciÃƒÂ³n": "IdClasificacion",
+    "PuntajeSatisfacciÃƒÂ³n": "PuntajeSatisfaccion",
+    "PuntajeSatisfacción": "PuntajeSatisfaccion",
+}
+
 
 def _crear_pipeline(nombre, archivo, tabla, requeridas, duplicados, **opciones):
     """Construye el pipeline estándar de lectura, transformación y carga."""
@@ -30,6 +44,16 @@ def _ids_de(tabla, columna):
     return set(pd.read_sql(consulta, con=engine)[columna])
 
 
+def _identificar_columna_categoria(productos):
+    columna_categoria = next(
+        (col for col in COLUMNA_CATEGORIA_ALTERNATIVAS if col in productos.columns),
+        None,
+    )
+    if columna_categoria is None:
+        raise ValueError("products.csv debe incluir la columna Categoría")
+    return columna_categoria
+
+
 def _preparar_catalogos():
     """Crea las tablas y agrega las clasificaciones y categorías faltantes."""
     Base.metadata.create_all(engine)
@@ -37,23 +61,13 @@ def _preparar_catalogos():
     existentes = set(pd.read_sql(
         text("SELECT IdClasificacion FROM Clasificacion"), con=engine
     )["IdClasificacion"])
-    catalogo = pd.DataFrame([
-        {"IdClasificacion": 1, "Nombre": "Positiva"},
-        {"IdClasificacion": 2, "Nombre": "Negativa"},
-        {"IdClasificacion": 3, "Nombre": "Neutra"},
-    ])
+    catalogo = pd.DataFrame(CLASIFICACIONES)
     faltantes = catalogo[~catalogo["IdClasificacion"].isin(existentes)]
     if not faltantes.empty:
         faltantes.to_sql("Clasificacion", con=engine, if_exists="append", index=False)
 
     productos = pd.read_csv(DATA / "products.csv", encoding="utf-8")
-    columna_categoria = next(
-        (col for col in ("Categoría", "CategorÃ­a") if col in productos.columns),
-        None,
-    )
-    if columna_categoria is None:
-        raise ValueError("products.csv debe incluir la columna Categoría")
-
+    columna_categoria = _identificar_columna_categoria(productos)
     nombres = productos[columna_categoria].dropna().astype(str).str.strip().unique()
     categorias = pd.read_sql(text("SELECT Nombre FROM Categoria"), con=engine)["Nombre"]
     faltantes = sorted(set(nombres) - set(categorias))
@@ -87,7 +101,7 @@ def _pipeline_productos(mapa_categorias):
     return _crear_pipeline(
         "Productos", "products.csv", "Producto",
         ["IdProducto", "Nombre", "IdCategoria"], ["IdProducto"],
-        renombrar={"Categoría": "IdCategoria", "CategorÃ­a": "IdCategoria"},
+        renombrar=RENOMBRAR_CATEGORIA,
         mapas={"IdCategoria": mapa_categorias},
         columnas_salida=["IdProducto", "Nombre", "IdCategoria"],
     )
@@ -100,12 +114,7 @@ def _pipelines_opiniones(referencias):
             ["IdCliente", "IdProducto", "Fecha", "Comentario", "IdFuente",
              "IdClasificacion", "PuntajeSatisfaccion"],
             ["IdCliente", "IdProducto", "Fecha", "Comentario"],
-            renombrar={
-                "Clasificación": "IdClasificacion",
-                "ClasificaciÃƒÂ³n": "IdClasificacion",
-                "PuntajeSatisfacciÃƒÂ³n": "PuntajeSatisfaccion",
-                "PuntajeSatisfacción": "PuntajeSatisfaccion",
-            },
+            renombrar=RENOMBRAR_OPINIONES,
             mapas={"IdClasificacion": {"Positiva": 1, "Negativa": 2, "Neutra": 3}},
             valores_default={"IdFuente": 2}, referencias=referencias,
             columnas_salida=["IdCliente", "IdProducto", "IdClasificacion", "IdFuente",

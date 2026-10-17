@@ -1,7 +1,9 @@
 import pandas as pd
 
+from application.interfaces import IExtractor
 
-class CsvExtractor:
+
+class CsvExtractor(IExtractor):
     def __init__(self, ruta_archivo):
         self.ruta_archivo = ruta_archivo
 
