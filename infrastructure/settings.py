@@ -44,6 +44,11 @@ class Configuracion:
     def logging(self) -> dict[str, Any]:
         return self.datos.get("Logging", {})
 
+    @property
+    def dimensiones(self) -> dict[str, Any]:
+        """Opciones de la carga de dimensiones (miembro Desconocido y rango de Dim_Fecha)."""
+        return self.datos.get("Dimensiones", {})
+
     def conexion(self, nombre: str) -> dict[str, Any]:
         try:
             return self.datos["Conexiones"][nombre]

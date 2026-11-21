@@ -100,10 +100,13 @@ Documentación interactiva de la API: http://127.0.0.1:8000/docs
 ## Arquitectura
 
 ```text
-worker.py                         punto de entrada (Worker Service)
+worker.py                         punto de entrada de la extracción (Worker Service)
+cargar_dimensiones.py             punto de entrada de la carga de dimensiones
 application/
   interfaces.py                   IExtractorAsync, IStagingWriter, IRunLogRepository
   extraction_service.py           corre las fuentes en paralelo y registra la bitácora
+  dimension_preparation.py        prepara las filas de cada dimensión (funciones puras)
+  dimension_service.py            orquesta la carga de las cinco dimensiones
 infrastructure/
   settings.py                     appsettings.json + .env
   logging_config.py               logs a consola y archivo rotativo
@@ -111,6 +114,9 @@ infrastructure/
   extractors/                     DatabaseExtractor, CsvExtractorAsync, ApiExtractor
   staging_writer.py               TRUNCATE + INSERT masivo en una transacción
   run_log_repository.py           etl.EjecucionExtraccion / etl.DetalleExtraccion
+  staging_reader.py               lee stg.* para la carga de dimensiones
+  dimension_loader.py             llama a etl.usp_Cargar_Dim_* con un parámetro de tipo tabla
+  dimension_log_repository.py     etl.EjecucionCarga / etl.DetalleCargaDimension
 api_comentarios/app.py            API REST local (FastAPI) protegida con X-API-Key
 scripts/generar_carga.py          CSV de 50,000 encuestas para la prueba de rendimiento
 tests/                            pruebas con pytest
@@ -132,6 +138,44 @@ Agregar una fuente nueva: crear una clase que herede de `IExtractorAsync`, regis
 | logging | Logs de eventos y errores | ILogger / Serilog |
 | time.perf_counter | Medición de tiempos | Stopwatch |
 | pytest | Pruebas automáticas | xUnit |
+
+---
+
+# Carga (L) de las dimensiones
+
+Toma lo que la extracción dejó en `stg.*`, lo prepara y lo carga en las cinco dimensiones del modelo (`dbo.Dim_*`). Las tablas de hechos no forman parte de esta etapa.
+
+| Dimensión | Origen | Tipo de tabla | Procedimiento |
+| --- | --- | --- | --- |
+| `Dim_Clasificacion` | `stg.Clasificacion` | `etl.T_Dim_Clasificacion` | `etl.usp_Cargar_Dim_Clasificacion` |
+| `Dim_Fuente` | `stg.FuenteDatos` | `etl.T_Dim_Fuente` | `etl.usp_Cargar_Dim_Fuente` |
+| `Dim_Fecha` | calendario generado (`Dimensiones.Fecha` en appsettings) | `etl.T_Dim_Fecha` | `etl.usp_Cargar_Dim_Fecha` |
+| `Dim_Producto` | `stg.Producto` + `stg.Categoria` | `etl.T_Dim_Producto` | `etl.usp_Cargar_Dim_Producto` |
+| `Dim_Cliente` | `stg.Cliente` | `etl.T_Dim_Cliente` | `etl.usp_Cargar_Dim_Cliente` |
+
+## Cómo funciona
+
+1. Python lee la tabla staging y prepara las filas (`application/dimension_preparation.py`): limpia espacios, quita el prefijo de las claves (`C019` pasa a `19`), rechaza filas inválidas y conserva la última de las claves repetidas.
+2. Envía todo el lote en una sola llamada al procedimiento almacenado, como parámetro de tipo tabla (TVP).
+3. El procedimiento actualiza lo que cambió, inserta lo que falta y devuelve los conteos. Es seguro repetirlo: la segunda corrida no duplica nada.
+4. Cada corrida queda en la bitácora `etl.EjecucionCarga` y `etl.DetalleCargaDimension`.
+
+`Dim_Cliente`, `Dim_Producto` y `Dim_Fuente` incluyen una fila `Desconocido` (clave `-1`) para las opiniones cuya referencia no exista. Se desactiva con `"MiembroDesconocido": false`.
+
+## Ejecución
+
+1. En SSMS, en orden: `sql/07_tipos_dimensiones.sql`, `08_procedimientos_dimensiones.sql`, `09_bitacora_carga.sql` y `10_permisos_carga.sql` (el 10 requiere haber ejecutado antes el 06).
+2. Tener la extracción hecha: `python worker.py --una-vez` (si `stg.*` está vacío, la carga lo avisa).
+3. Cargar:
+
+```powershell
+python cargar_dimensiones.py                       # las cinco dimensiones
+python cargar_dimensiones.py --dimension Cliente   # solo una (se puede repetir)
+```
+
+4. Comprobar con `sql/11_verificar_dimensiones.sql`.
+
+Código de salida: `0` exitosa, `2` parcial (alguna dimensión falló), `1` fallida.
 
 ## Pruebas
 

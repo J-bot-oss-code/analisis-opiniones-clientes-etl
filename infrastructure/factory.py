@@ -8,17 +8,23 @@ Para agregar un tipo de fuente nuevo:
 
 import logging
 from dataclasses import dataclass
+from datetime import date
 from typing import Callable
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
+from application.dimension_preparation import OpcionesDimensiones
+from application.dimension_service import DimensionLoadService
 from application.extraction_service import ExtractionService
 from application.interfaces import IExtractorAsync
+from infrastructure.dimension_loader import SqlServerDimensionLoader
+from infrastructure.dimension_log_repository import SqlServerDimensionLogRepository
 from infrastructure.extractors import ApiExtractor, CsvExtractorAsync, DatabaseExtractor
 from infrastructure.run_log_repository import SqlServerRunLogRepository
 from infrastructure.settings import (Configuracion, ErrorConfiguracion, crear_url_sql_server,
                                      ruta_del_proyecto, secreto)
+from infrastructure.staging_reader import SqlServerStagingReader
 from infrastructure.staging_writer import SqlServerStagingWriter
 
 
@@ -123,3 +129,33 @@ def crear_servicio(config: Configuracion, logger: logging.Logger) -> tuple[Extra
         logger=logger.getChild("servicio"),
     )
     return servicio, motores
+
+
+def crear_opciones_dimensiones(config: Configuracion) -> OpcionesDimensiones:
+    """Lee la sección "Dimensiones" de appsettings.json (con valores por defecto razonables)."""
+    datos = config.dimensiones
+    rango = datos.get("Fecha", {})
+    try:
+        inicio = date.fromisoformat(rango.get("Inicio", "2024-01-01"))
+        fin = date.fromisoformat(rango.get("Fin", "2025-12-31"))
+    except ValueError as error:
+        raise ErrorConfiguracion(
+            f"Dimensiones.Fecha: use fechas AAAA-MM-DD en 'Inicio' y 'Fin' ({error})") from error
+    if fin < inicio:
+        raise ErrorConfiguracion("Dimensiones.Fecha: 'Fin' no puede ser anterior a 'Inicio'")
+    return OpcionesDimensiones(inicio, fin, bool(datos.get("MiembroDesconocido", True)))
+
+
+def crear_servicio_dimensiones(config: Configuracion,
+                               logger: logging.Logger) -> tuple[DimensionLoadService, list[Engine]]:
+    """Devuelve el servicio de carga de dimensiones y los motores creados (para cerrarlos al final)."""
+    opciones = crear_opciones_dimensiones(config)
+    motor_destino = crear_motor(config.conexion("Destino"))
+    servicio = DimensionLoadService(
+        lector=SqlServerStagingReader(motor_destino),
+        cargador=SqlServerDimensionLoader(motor_destino),
+        bitacora=SqlServerDimensionLogRepository(motor_destino),
+        opciones=opciones,
+        logger=logger.getChild("dimensiones"),
+    )
+    return servicio, [motor_destino]

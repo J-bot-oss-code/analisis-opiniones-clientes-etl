@@ -32,3 +32,35 @@ def test_url_con_autenticacion_windows_no_lleva_clave():
                                 "AutenticacionWindows": True})
     assert url.query["Trusted_Connection"] == "yes"
     assert url.password is None
+
+
+def test_opciones_de_dimensiones_se_leen_de_appsettings():
+    from datetime import date
+    from infrastructure.factory import crear_opciones_dimensiones
+    from infrastructure.settings import Configuracion
+
+    opciones = crear_opciones_dimensiones(Configuracion({"Dimensiones": {
+        "MiembroDesconocido": False, "Fecha": {"Inicio": "2023-05-01", "Fin": "2023-05-31"}}}))
+    assert (opciones.fecha_inicio, opciones.fecha_fin) == (date(2023, 5, 1), date(2023, 5, 31))
+    assert opciones.miembro_desconocido is False
+
+
+def test_opciones_de_dimensiones_tienen_valores_por_defecto():
+    from datetime import date
+    from infrastructure.factory import crear_opciones_dimensiones
+    from infrastructure.settings import Configuracion
+
+    opciones = crear_opciones_dimensiones(Configuracion({}))
+    assert (opciones.fecha_inicio, opciones.fecha_fin) == (date(2024, 1, 1), date(2025, 12, 31))
+    assert opciones.miembro_desconocido is True
+
+
+def test_opciones_de_dimensiones_rechazan_fechas_invalidas():
+    import pytest
+    from infrastructure.factory import crear_opciones_dimensiones
+    from infrastructure.settings import Configuracion, ErrorConfiguracion
+
+    with pytest.raises(ErrorConfiguracion):
+        crear_opciones_dimensiones(Configuracion({"Dimensiones": {"Fecha": {"Inicio": "ayer"}}}))
+    with pytest.raises(ErrorConfiguracion):
+        crear_opciones_dimensiones(Configuracion({"Dimensiones": {"Fecha": {"Inicio": "2025-02-01", "Fin": "2025-01-01"}}}))
