@@ -121,7 +121,7 @@ def test_se_puede_elegir_una_dimension():
 
 def test_dimension_desconocida_se_rechaza():
     servicio, _ = crear()
-    with pytest.raises(ValueError, match="Dimensión desconocida"):
+    with pytest.raises(ValueError, match="Nombre desconocido: Inventada"):
         servicio.ejecutar(["Inventada"])
 
 

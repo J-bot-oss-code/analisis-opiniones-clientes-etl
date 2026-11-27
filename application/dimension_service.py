@@ -9,7 +9,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import pandas as pd
 
@@ -34,7 +34,7 @@ class DefinicionDimension:
     tipo_sql: str                            # tipo de tabla (script 07)
     procedimiento: str                       # procedimiento almacenado (script 08)
     tablas_staging: tuple[str, ...]          # vacío si la dimensión no sale de staging (Fecha)
-    preparar: Callable[[dict[str, pd.DataFrame], OpcionesDimensiones], Preparacion]
+    preparar: Callable[[dict[str, pd.DataFrame], Any], Preparacion]   # opciones: OpcionesDimensiones u OpcionesHechos
 
 
 # Orden de carga. Entre estas dimensiones no hay claves foráneas, así que el orden no afecta
@@ -86,25 +86,35 @@ class ResumenCarga:
 
 
 class DimensionLoadService:
+    """Orquesta la carga de un conjunto de tablas destino.  Por defecto son las dimensiones; con otro
+    `registro` (p. ej. HECHOS en fact_service.py) carga las tablas de hechos con el mismo flujo."""
+
     def __init__(self, lector: IStagingReader, cargador: IDimensionLoader,
-                 bitacora: IDimensionLogRepository, opciones: OpcionesDimensiones,
+                 bitacora: IDimensionLogRepository, opciones: Any,
                  logger: logging.Logger | None = None,
-                 reloj: Callable[[], datetime] = datetime.now):
+                 reloj: Callable[[], datetime] = datetime.now,
+                 registro: dict[str, DefinicionDimension] | None = None,
+                 scripts: str = "07 al 10", etiqueta: str = "dimensiones",
+                 tamano_lote: int | None = None):
         self.lector = lector
         self.cargador = cargador
         self.bitacora = bitacora
         self.opciones = opciones
         self.logger = logger or logging.getLogger("extraccion.dimensiones")
         self.reloj = reloj
+        self.registro = registro if registro is not None else DIMENSIONES
+        self.scripts = scripts                # scripts SQL que crean lo necesario (para el mensaje de error)
+        self.etiqueta = etiqueta              # "dimensiones" o "hechos" (para los mensajes)
+        self.tamano_lote = tamano_lote        # filas por llamada al procedimiento (None = todas juntas)
 
     def _seleccionar(self, nombres: list[str] | None) -> list[DefinicionDimension]:
         if not nombres:
-            return list(DIMENSIONES.values())
-        desconocidas = [n for n in nombres if n not in DIMENSIONES]
+            return list(self.registro.values())
+        desconocidas = [n for n in nombres if n not in self.registro]
         if desconocidas:
-            raise ValueError("Dimensión desconocida: " + ", ".join(desconocidas)
-                             + f". Válidas: {', '.join(DIMENSIONES)}")
-        return [d for d in DIMENSIONES.values() if d.nombre in nombres]  # siempre en orden de carga
+            raise ValueError("Nombre desconocido: " + ", ".join(desconocidas)
+                             + f". Válidos: {', '.join(self.registro)}")
+        return [d for d in self.registro.values() if d.nombre in nombres]  # siempre en orden de carga
 
     def verificar_destino(self, nombres: list[str] | None = None) -> None:
         """Comprueba al arrancar que existan las tablas, tipos y procedimientos necesarios."""
@@ -118,7 +128,7 @@ class DimensionLoadService:
         if faltantes:
             raise ErrorDestino(
                 "Faltan objetos en el Data Warehouse: " + ", ".join(faltantes)
-                + ". Ejecute los scripts de la carpeta sql/ (07 al 10)."
+                + f". Ejecute los scripts de la carpeta sql/ ({self.scripts})."
             )
         self.logger.info("Destino verificado: %d tablas y %d procedimientos encontrados",
                          len(tablas), len(definiciones))
@@ -130,8 +140,8 @@ class DimensionLoadService:
         tablas_staging = sorted({t for d in definiciones for t in d.tablas_staging})
         id_extraccion = self.lector.ultima_ejecucion(tablas_staging) if tablas_staging else None
         id_carga = self.bitacora.iniciar(inicio, id_extraccion)
-        self.logger.info("Carga %d iniciada: %d dimensiones (datos de la extracción %s)",
-                         id_carga, len(definiciones), id_extraccion if id_extraccion else "-")
+        self.logger.info("Carga %d iniciada: %d %s (datos de la extracción %s)",
+                         id_carga, len(definiciones), self.etiqueta, id_extraccion if id_extraccion else "-")
 
         resultados = [self._procesar(definicion, id_carga) for definicion in definiciones]
 
@@ -146,9 +156,20 @@ class DimensionLoadService:
         mensaje = "; ".join(f"{r.nombre}: {r.mensaje}" for r in fallidas) or None
         self.bitacora.finalizar(id_carga, self.reloj(), estado, duracion, mensaje)
         nivel = logging.INFO if estado == "Exitosa" else logging.WARNING
-        self.logger.log(nivel, "Carga %d %s en %.2f s (%d de %d dimensiones con error)",
-                        id_carga, estado.lower(), duracion, len(fallidas), len(resultados))
+        self.logger.log(nivel, "Carga %d %s en %.2f s (%d de %d %s con error)",
+                        id_carga, estado.lower(), duracion, len(fallidas), len(resultados), self.etiqueta)
         return ResumenCarga(id_carga, estado, duracion, resultados)
+
+    def _enviar(self, definicion: DefinicionDimension, filas: list[tuple]) -> ConteosCarga:
+        """Envía las filas al procedimiento, en lotes de `tamano_lote`, y suma los conteos de cada lote.
+        Cada lote es una transacción propia; como la carga es idempotente, repetirla completa lo que falte."""
+        tamano = self.tamano_lote or len(filas)
+        total = ConteosCarga(0, 0, 0, 0)
+        for desde in range(0, len(filas), tamano):
+            parcial = self.cargador.cargar(definicion.tipo_sql, definicion.procedimiento, filas[desde:desde + tamano])
+            total = ConteosCarga(total.enviadas + parcial.enviadas, total.insertadas + parcial.insertadas,
+                                 total.actualizadas + parcial.actualizadas, total.sin_cambios + parcial.sin_cambios)
+        return total
 
     def _procesar(self, definicion: DefinicionDimension, id_carga: int) -> ResultadoDimension:
         cronometro = time.perf_counter()
@@ -163,7 +184,7 @@ class DimensionLoadService:
             leidas, rechazadas, enviadas = preparacion.leidas, preparacion.rechazadas, len(preparacion.filas)
             if not preparacion.filas:
                 raise ValueError("no quedó ninguna fila válida para cargar")
-            conteos = self.cargador.cargar(definicion.tipo_sql, definicion.procedimiento, preparacion.filas)
+            conteos = self._enviar(definicion, preparacion.filas)
             mensaje = "; ".join(preparacion.avisos) or None
             self.logger.info(
                 "%s: %d leídas, %d rechazadas -> %d insertadas, %d actualizadas, %d sin cambios (%.2f s)",

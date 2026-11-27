@@ -7,6 +7,7 @@
       - CSV y API se guardan como texto (NVARCHAR), porque traen IDs como 'C019' o fechas vacías.
       - Todas terminan con IdEjecucion y FechaExtraccion (auditoría del lote).
     Se pueden recrear cuando sea necesario: no guardan historial.
+    (stg.ResenaWeb también se puede crear sola, sin borrar nada, con 14_staging_resenas.sql.)
 */
 USE OpinionesCliente_DW;
 GO
@@ -108,7 +109,22 @@ CREATE TABLE stg.ComentarioAPI (
 );
 GO
 
-/* ---------- Verificación: deben salir 8 tablas y 51 columnas ---------- */
+/* ---------- Fuente: CSV de reseñas web (todo texto) ---------- */
+
+DROP TABLE IF EXISTS stg.ResenaWeb;
+CREATE TABLE stg.ResenaWeb (
+    IdReview            NVARCHAR(50)   NULL,
+    IdCliente           NVARCHAR(50)   NULL,
+    IdProducto          NVARCHAR(50)   NULL,
+    Fecha               NVARCHAR(50)   NULL,
+    Comentario          NVARCHAR(1000) NULL,
+    Rating              NVARCHAR(50)   NULL,
+    IdEjecucion         INT            NOT NULL,
+    FechaExtraccion     DATETIME2(0)   NOT NULL
+);
+GO
+
+/* ---------- Verificación: deben salir 9 tablas y 59 columnas ---------- */
 
 SELECT TABLE_NAME, COUNT(*) AS Columnas
 FROM INFORMATION_SCHEMA.COLUMNS

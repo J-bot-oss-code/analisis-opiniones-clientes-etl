@@ -8,14 +8,14 @@ class MotorFalso:
     pass
 
 
-def test_crea_las_ocho_fuentes_del_json(monkeypatch):
+def test_crea_las_nueve_fuentes_del_json(monkeypatch):
     monkeypatch.setenv("API_COMENTARIOS_KEY", "llave")
     import logging
     extractores = crear_extractores(cargar_configuracion(), logging.getLogger("t"), MotorFalso)
 
     tablas = {e.tabla_destino for e in extractores}
-    assert len(extractores) == 8
-    assert {"stg.Opinion", "stg.EncuestaCSV", "stg.ComentarioAPI"} <= tablas
+    assert len(extractores) == 9
+    assert {"stg.Opinion", "stg.EncuestaCSV", "stg.ResenaWeb", "stg.ComentarioAPI"} <= tablas
 
 
 def test_falta_la_api_key(monkeypatch, tmp_path):
@@ -64,3 +64,36 @@ def test_opciones_de_dimensiones_rechazan_fechas_invalidas():
         crear_opciones_dimensiones(Configuracion({"Dimensiones": {"Fecha": {"Inicio": "ayer"}}}))
     with pytest.raises(ErrorConfiguracion):
         crear_opciones_dimensiones(Configuracion({"Dimensiones": {"Fecha": {"Inicio": "2025-02-01", "Fin": "2025-01-01"}}}))
+
+
+def test_opciones_de_hechos_se_leen_de_appsettings():
+    from infrastructure.factory import crear_opciones_hechos
+    from infrastructure.settings import Configuracion
+
+    opciones = crear_opciones_hechos(Configuracion({"Hechos": {
+        "TamanoLote": 100, "IdFuenteEncuestas": 3, "FuentesExcluidasDeOpiniones": [1, 4]}}))
+    assert (opciones.tamano_lote, opciones.id_fuente_encuestas) == (100, 3)
+    assert opciones.fuentes_excluidas_opiniones == frozenset({1, 4})
+
+
+def test_opciones_de_hechos_tienen_valores_por_defecto_y_validan():
+    import pytest
+    from infrastructure.factory import crear_opciones_hechos
+    from infrastructure.settings import Configuracion, ErrorConfiguracion
+
+    por_defecto = crear_opciones_hechos(Configuracion({}))
+    assert (por_defecto.tamano_lote, por_defecto.id_fuente_encuestas) == (500, 2)
+    assert por_defecto.fuentes_excluidas_opiniones == frozenset({1})
+    with pytest.raises(ErrorConfiguracion):
+        crear_opciones_hechos(Configuracion({"Hechos": {"TamanoLote": 0}}))
+    with pytest.raises(ErrorConfiguracion):
+        crear_opciones_hechos(Configuracion({"Hechos": {"IdFuenteEncuestas": "dos"}}))
+
+
+def test_el_appsettings_real_trae_la_seccion_de_hechos_y_la_fuente_de_resenas():
+    from infrastructure.factory import crear_opciones_hechos
+
+    config = cargar_configuracion()
+    assert crear_opciones_hechos(config).tamano_lote == 500
+    assert crear_opciones_hechos(config).dimensiones.miembro_desconocido is False   # base analítica: sin 'Desconocido'
+    assert "stg.ResenaWeb" in {f["TablaDestino"] for f in config.fuentes_activas}

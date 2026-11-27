@@ -49,6 +49,11 @@ class Configuracion:
         """Opciones de la carga de dimensiones (miembro Desconocido y rango de Dim_Fecha)."""
         return self.datos.get("Dimensiones", {})
 
+    @property
+    def hechos(self) -> dict[str, Any]:
+        """Opciones de la carga de hechos (fuente de las encuestas, fuentes solo-reseña y tamaño de lote)."""
+        return self.datos.get("Hechos", {})
+
     def conexion(self, nombre: str) -> dict[str, Any]:
         try:
             return self.datos["Conexiones"][nombre]

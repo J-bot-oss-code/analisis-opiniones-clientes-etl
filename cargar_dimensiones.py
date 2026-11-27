@@ -31,9 +31,9 @@ def leer_argumentos(argv=None):
     return parser.parse_args(argv)
 
 
-def imprimir_resumen(resumen: ResumenCarga) -> None:
+def imprimir_resumen(resumen: ResumenCarga, objeto: str = "Dimensión", sin_cambios: str = "Sin cambios") -> None:
     """Tabla final en consola: sirve como evidencia de la carga."""
-    columnas = ["Dimensión", "Leídas", "Rechaz.", "Enviadas", "Insertadas", "Actualiz.", "Sin cambios", "Estado"]
+    columnas = [objeto, "Leídas", "Rechaz.", "Enviadas", "Insertadas", "Actualiz.", sin_cambios, "Estado"]
     filas = []
     for r in resumen.resultados:
         c = r.conteos

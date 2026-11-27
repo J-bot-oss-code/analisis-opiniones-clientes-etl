@@ -17,6 +17,8 @@ from sqlalchemy.engine import Engine
 from application.dimension_preparation import OpcionesDimensiones
 from application.dimension_service import DimensionLoadService
 from application.extraction_service import ExtractionService
+from application.fact_preparation import OpcionesHechos
+from application.fact_service import HECHOS
 from application.interfaces import IExtractorAsync
 from infrastructure.dimension_loader import SqlServerDimensionLoader
 from infrastructure.dimension_log_repository import SqlServerDimensionLogRepository
@@ -157,5 +159,40 @@ def crear_servicio_dimensiones(config: Configuracion,
         bitacora=SqlServerDimensionLogRepository(motor_destino),
         opciones=opciones,
         logger=logger.getChild("dimensiones"),
+    )
+    return servicio, [motor_destino]
+
+
+def crear_opciones_hechos(config: Configuracion) -> OpcionesHechos:
+    """Lee la sección "Hechos" de appsettings.json (con valores por defecto) y reutiliza la de "Dimensiones"."""
+    datos = config.hechos
+    try:
+        id_encuestas = int(datos.get("IdFuenteEncuestas", 2))
+        excluidas = frozenset(int(valor) for valor in datos.get("FuentesExcluidasDeOpiniones", [1]))
+        tamano = int(datos.get("TamanoLote", 500))
+    except (TypeError, ValueError) as error:
+        raise ErrorConfiguracion(
+            f"Hechos: 'IdFuenteEncuestas', 'FuentesExcluidasDeOpiniones' y 'TamanoLote' deben ser números ({error})"
+        ) from error
+    if tamano < 1:
+        raise ErrorConfiguracion("Hechos.TamanoLote debe ser al menos 1")
+    return OpcionesHechos(crear_opciones_dimensiones(config), id_encuestas, excluidas, tamano)
+
+
+def crear_servicio_hechos(config: Configuracion,
+                          logger: logging.Logger) -> tuple[DimensionLoadService, list[Engine]]:
+    """Devuelve el servicio de carga de hechos y los motores creados (para cerrarlos al final)."""
+    opciones = crear_opciones_hechos(config)
+    motor_destino = crear_motor(config.conexion("Destino"))
+    servicio = DimensionLoadService(
+        lector=SqlServerStagingReader(motor_destino),
+        cargador=SqlServerDimensionLoader(motor_destino),
+        bitacora=SqlServerDimensionLogRepository(motor_destino),
+        opciones=opciones,
+        logger=logger.getChild("hechos"),
+        registro=HECHOS,
+        scripts="14 al 18",
+        etiqueta="hechos",
+        tamano_lote=opciones.tamano_lote,
     )
     return servicio, [motor_destino]

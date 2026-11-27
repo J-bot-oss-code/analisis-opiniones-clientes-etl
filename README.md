@@ -102,11 +102,14 @@ Documentación interactiva de la API: http://127.0.0.1:8000/docs
 ```text
 worker.py                         punto de entrada de la extracción (Worker Service)
 cargar_dimensiones.py             punto de entrada de la carga de dimensiones
+cargar_hechos.py                  punto de entrada de la carga de hechos
 application/
   interfaces.py                   IExtractorAsync, IStagingWriter, IRunLogRepository
   extraction_service.py           corre las fuentes en paralelo y registra la bitácora
   dimension_preparation.py        prepara las filas de cada dimensión (funciones puras)
-  dimension_service.py            orquesta la carga de las cinco dimensiones
+  dimension_service.py            orquesta la carga (dimensiones y hechos) con interfaces
+  fact_preparation.py             prepara y valida las filas de cada hecho (funciones puras)
+  fact_service.py                 registro de los hechos: staging de origen, tipo y procedimiento
 infrastructure/
   settings.py                     appsettings.json + .env
   logging_config.py               logs a consola y archivo rotativo
@@ -143,7 +146,7 @@ Agregar una fuente nueva: crear una clase que herede de `IExtractorAsync`, regis
 
 # Carga (L) de las dimensiones
 
-Toma lo que la extracción dejó en `stg.*`, lo prepara y lo carga en las cinco dimensiones del modelo (`dbo.Dim_*`). Las tablas de hechos no forman parte de esta etapa.
+Toma lo que la extracción dejó en `stg.*`, lo prepara y lo carga en las cinco dimensiones del modelo (`dbo.Dim_*`). Las tablas de hechos se cargan en la etapa siguiente (sección «Carga (L) de las tablas de hechos»).
 
 | Dimensión | Origen | Tipo de tabla | Procedimiento |
 | --- | --- | --- | --- |
@@ -176,6 +179,41 @@ python cargar_dimensiones.py --dimension Cliente   # solo una (se puede repetir)
 4. Comprobar con `sql/11_verificar_dimensiones.sql`.
 
 Código de salida: `0` exitosa, `2` parcial (alguna dimensión falló), `1` fallida.
+
+## Carga (L) de las tablas de hechos
+
+Se ejecuta **después** de las dimensiones. Toma `stg.*`, valida cada fila contra las dimensiones y envía solo lo necesario a los hechos, que únicamente se **insertan** (un hecho registra algo que ya ocurrió; no se actualiza).
+
+| Hecho | Origen | Clave natural | Tipo de tabla | Procedimiento |
+| --- | --- | --- | --- | --- |
+| `Fact_Opiniones` | `stg.Opinion` (base relacional) + `stg.EncuestaCSV` | `IdOpinion` con prefijo (`BD-`, `ENC-`) | `etl.T_Fact_Opiniones` | `etl.usp_Cargar_Fact_Opiniones` |
+| `Fact_Resenas` | `stg.ResenaWeb` (`data/web_reviews.csv`) | `IdReview` | `etl.T_Fact_Resenas` | `etl.usp_Cargar_Fact_Resenas` |
+
+Reglas para cargar solo lo necesario:
+
+1. **Cliente o producto inexistentes se rechazan** (base analítica: todo hecho debe poder analizarse por cliente y por producto). `Dimensiones.MiembroDesconocido` está en `false`; si se activa, esas filas pasarían al miembro `Desconocido` (`-1`). `sql/19_quitar_miembro_desconocido.sql` borra las filas `-1` que la primera carga había creado.
+2. **Clasificación y fecha no tienen miembro `Desconocido`:** una fila sin clasificación válida, sin puntaje (1 a 5) o con fecha fuera de `Dim_Fecha` se rechaza.
+3. **Reseñas:** la clasificación se deriva del Rating (1–2 negativa, 3 neutra, 4–5 positiva).
+4. **Sin duplicados entre fuentes:** el prefijo evita choques de `IdOpinion`; una encuesta que ya está en la base relacional (mismo cliente, producto y fecha) no se repite; las opiniones de las fuentes en `Hechos.FuentesExcluidasDeOpiniones` (Web) se cargan como reseñas.
+5. **Redes sociales** no traen puntaje ni clasificación, por eso no son hechos.
+6. **Sin duplicados al repetir:** el procedimiento hace `INSERT ... WHERE NOT EXISTS` (con `UPDLOCK, HOLDLOCK`) en una transacción; lo que ya existía se cuenta como «Ya existían».
+
+Los lotes viajan como parámetro de tipo tabla de `Hechos.TamanoLote` filas (500 por defecto).
+
+### Ejecución
+
+1. En SSMS, en orden: `sql/14_staging_resenas.sql`, `15_tipos_hechos.sql`, `16_procedimientos_hechos.sql`, `17_vistas_indices_hechos.sql` y `19_quitar_miembro_desconocido.sql`.
+2. Volver a extraer, para llenar `stg.ResenaWeb`: `python worker.py --una-vez`.
+3. Cargar:
+
+```powershell
+python cargar_hechos.py                        # Fact_Opiniones y Fact_Resenas
+python cargar_hechos.py --hecho Fact_Resenas   # solo uno (se puede repetir)
+```
+
+4. Comprobar con `sql/18_verificar_hechos.sql`. `sql/13_diagnostico_hechos.sql` es una revisión previa de los datos (solo consulta).
+
+Vistas: `dbo.vw_OpinionesDetalle`, `vw_ResenasDetalle`, `vw_ResumenOpiniones`, `vw_ResumenResenas` y `etl.vw_UltimaCarga`. El script 17 también crea los índices (clave natural única y una columna FK por índice).
 
 ## Pruebas
 

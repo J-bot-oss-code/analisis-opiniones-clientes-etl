@@ -8,7 +8,8 @@ GO
 
 /* 1) Filas por dimensión.  Esperado con los datos de la entrega:
       Clasificacion 3, Cliente 501, Producto 201, Fuente 101, Fecha 731
-      (Cliente, Producto y Fuente incluyen la fila Desconocido, clave -1). */
+      (la primera carga incluyó la fila Desconocido, clave -1, en Cliente, Producto y Fuente).
+      Después de ejecutar 19_quitar_miembro_desconocido.sql: Cliente 500, Producto 200, Fuente 100 y sin filas -1. */
 SELECT 'Dim_Clasificacion' AS Dimension, COUNT(*) AS Filas FROM dbo.Dim_Clasificacion
 UNION ALL SELECT 'Dim_Cliente',  COUNT(*) FROM dbo.Dim_Cliente
 UNION ALL SELECT 'Dim_Producto', COUNT(*) FROM dbo.Dim_Producto
